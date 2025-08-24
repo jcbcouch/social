@@ -11,20 +11,131 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String
-  password  String
-  posts     Post[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Core fields
+  id              String    @id @default(uuid())
+  email           String?   @unique
+  username        String    @unique
+  name            String
+  domain          String    @default("localhost")
+  password        String?   // Null for remote users
+  bio             String?
+  avatar          String?
+  header          String?
+  
+  // Federation
+  actorUrl        String    @unique
+  publicKey       String?   // Public key for verification
+  privateKey      String?   // Only for local users
+  inboxUrl        String?   // Inbox URL for receiving activities
+  outboxUrl       String?   // Outbox URL for sending activities
+  sharedInboxUrl  String?   // Shared inbox for better federation performance
+  followersUrl    String?   // Followers collection URL
+  followingUrl    String?   // Following collection URL
+  featuredUrl     String?   // Pinned posts collection URL
+  
+  // Metadata
+  isLocal         Boolean   @default(true)
+  isBot           Boolean   @default(false)
+  isLocked        Boolean   @default(false)
+  isSuspended     Boolean   @default(false)
+  
+  // Relations
+  posts           Post[]
+  follows         Follow[]  @relation("follower")
+  followers       Follow[]  @relation("following")
+  sentActivities  Activity[] @relation("sentActivities")
+  receivedActivities Activity[] @relation("receivedActivities")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  lastStatusAt    DateTime?
+  
+  @@index([username, domain])
+  @@index([isLocal])
 }
 
 model Post {
-  id        String   @id @default(uuid())
-  content   String
-  author    User     @relation(fields: [authorId], references: [id])
-  authorId  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String    @id @default(uuid())
+  uri             String?   @unique // ActivityPub URI
+  url             String?   // Web URL
+  content         String
+  contentWarning  String?
+  isLocal         Boolean   @default(true)
+  isPublic        Boolean   @default(true)
+  isHidden        Boolean   @default(false)
+  
+  // Relations
+  author          User      @relation(fields: [authorId], references: [id])
+  authorId        String
+  inReplyToId     String?
+  inReplyTo       Post?     @relation("Replies", fields: [inReplyToId], references: [id])
+  replies         Post[]    @relation("Replies")
+  
+  // Timestamps
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([authorId])
+  @@index([inReplyToId])
+  @@index([createdAt])
+}
+
+model Follow {
+  id          String   @id @default(uuid())
+  followerId  String
+  follower    User     @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId String
+  following  User     @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+  showReblogs Boolean  @default(true)
+  notify      Boolean  @default(false)
+  approved    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+model Activity {
+  id          String   @id @default(uuid())
+  type        String   // Follow, Like, Announce, Create, etc.
+  actor       String   // URL of the actor
+  object      String   // URL or JSON string of the object
+  target      String?  // URL of the target
+  to          String?  // JSON array of recipients
+  cc          String?  // JSON array of CC recipients
+  published   DateTime @default(now())
+  
+  // Relations
+  senderId    String?
+  sender      User?    @relation("sentActivities", fields: [senderId], references: [id])
+  receiverId  String?
+  receiver    User?    @relation("receivedActivities", fields: [receiverId], references: [id])
+  
+  @@index([type])
+  @@index([actor])
+  @@index([published])
+}
+
+model Instance {
+  id              String    @id @default(uuid())
+  domain          String    @unique
+  clientMaxBodyBytes Int?   // Max upload size allowed by the instance
+  title           String?
+  description     String?
+  email           String?
+  version         String?
+  thumbnail       String?
+  urls            String?   // JSON array of instance URLs
+  stats           String?   // JSON object with user/post counts
+  isSuspended    Boolean   @default(false)
+  isApproved     Boolean   @default(true)
+  lastContactAt  DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@index([domain])
+  @@index([isApproved])
 }

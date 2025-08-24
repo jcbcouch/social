@@ -4,8 +4,28 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
+const crypto = require('crypto');
 
 const prisma = new PrismaClient();
+
+// Generate RSA key pair for the user
+const generateKeyPair = () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: {
+      type: 'spki',
+      format: 'pem'
+    },
+    privateKeyEncoding: {
+      type: 'pkcs8',
+      format: 'pem',
+      cipher: 'aes-256-cbc',
+      passphrase: process.env.JWT_SECRET
+    }
+  });
+
+  return { publicKey, privateKey };
+};
 
 // @route   POST /api/auth/register
 // @desc    Register a new user
@@ -14,6 +34,9 @@ router.post(
   '/register',
   [
     body('name', 'Name is required').not().isEmpty(),
+    body('username', 'Username is required').not().isEmpty(),
+    body('username', 'Username can only contain letters, numbers, and underscores')
+      .matches(/^[a-zA-Z0-9_]+$/),
     body('email', 'Please include a valid email').isEmail(),
     body('password', 'Please enter a password with 6 or more characters').isLength({ min: 6 }),
   ],
@@ -23,44 +46,93 @@ router.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, email, password } = req.body;
-
+    const { name, username, email, password, bio } = req.body;
+    const domain = process.env.SERVER_DOMAIN || 'localhost';
+    const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
+    const actorUrl = `${protocol}://${domain}/users/${username}`;
+    
     try {
-      // Check if user exists
-      let user = await prisma.user.findUnique({
-        where: { email },
+      // Check if user exists with email or username
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { email },
+            { username },
+            { actorUrl }
+          ]
+        }
       });
 
-      if (user) {
-        return res.status(400).json({ errors: [{ msg: 'User already exists' }] });
+      if (existingUser) {
+        return res.status(400).json({ 
+          errors: [{ 
+            msg: existingUser.email === email 
+              ? 'Email already in use' 
+              : 'Username already taken' 
+          }] 
+        });
       }
 
-      // Create user
+      // Generate keys for the user
+      const { publicKey, privateKey } = generateKeyPair();
+      
+      // Create user URLs
+      const userUrls = {
+        inbox: `${actorUrl}/inbox`,
+        outbox: `${actorUrl}/outbox`,
+        followers: `${actorUrl}/followers`,
+        following: `${actorUrl}/following`,
+        featured: `${actorUrl}/collections/featured`
+      };
+
+      // Hash password
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
 
-      user = await prisma.user.create({
+      // Create user
+      const user = await prisma.user.create({
         data: {
           name,
+          username,
           email,
           password: hashedPassword,
+          bio: bio || null,
+          domain,
+          actorUrl,
+          publicKey,
+          privateKey,
+          inboxUrl: userUrls.inbox,
+          outboxUrl: userUrls.outbox,
+          followersUrl: userUrls.followers,
+          followingUrl: userUrls.following,
+          featuredUrl: userUrls.featured,
+          sharedInboxUrl: `${protocol}://${domain}/inbox`
         },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          username: true,
+          actorUrl: true,
+          createdAt: true
+        }
       });
 
-      // Return jsonwebtoken
+      // Return JWT
       const payload = {
         user: {
           id: user.id,
-        },
+          actorUrl: user.actorUrl
+        }
       };
 
       jwt.sign(
         payload,
         process.env.JWT_SECRET,
-        { expiresIn: '5d' },
+        { expiresIn: '7d' },
         (err, token) => {
           if (err) throw err;
-          res.json({ token });
+          res.json({ token, user });
         }
       );
     } catch (err) {
@@ -138,7 +210,9 @@ router.get('/me', require('../middleware/auth').protect, async (req, res) => {
         id: true,
         name: true,
         email: true,
-        createdAt: true,
+        username: true,
+        actorUrl: true,
+        createdAt: true
       },
     });
 
